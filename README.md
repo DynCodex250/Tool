@@ -18,28 +18,44 @@ Bei den Servicetechnikern wissen wir noch nicht genau, was sie im System machen 
 
 2. Speicherplatz für die Datenbank
 
-Microsoft gibt uns für unsere Datenbanken einen festen Speicherplatz von 705 GB. Davon nutzen wir heute schon etwa 630 GB, für das Produktivsystem und unsere drei Testsysteme.
+Microsoft gibt uns für unsere Datenbanken einen festen Speicherplatz von knapp 700 GB. Davon nutzen wir heute schon etwa 630 GB, für das Produktivsystem und unsere drei Testsysteme.
 
-Für das Projekt kommt jetzt ein weiteres Testsystem für die Datenübernahme dazu. Es ist ungefähr so groß wie unser Produktivsystem, also etwa 200 GB. Dadurch liegen wir ab jetzt bis zum Go-Live über unserem Speicherplatz.
+Für das Projekt kommt jetzt ein weiteres Testsystem für die Datenübernahme dazu, das Migrationssystem. Es ist ungefähr so groß wie unser Produktivsystem, also etwa 210 GB. Dadurch liegen wir ab jetzt bis zum Go-Live über unserem Speicherplatz.
 
-Microsoft erlaubt uns, den Speicherplatz dreimal in 365 Tagen für jeweils 45 Tage kostenlos zu erweitern. Eine Erweiterung läuft gerade und endet Mitte November. Die zwei übrigen wollen wir direkt vor den Go-Live legen, von Mitte März bis Mitte Juni 2027, denn dann ist der Bedarf am größten.
+Microsoft erlaubt uns, den Speicherplatz dreimal innerhalb von 365 Tagen für jeweils 45 Tage kostenlos zu erweitern. Die erste Erweiterung läuft gerade und endet Mitte November.
 
-Von Mitte November bis Mitte März, also etwa vier Monate, haben wir keine kostenlose Erweiterung. In dieser Zeit müssen wir Speicherplatz kaufen (30 € pro GB und Monat) oder Platz frei machen.
+[Bild 1: Kapazitätserweiterung im Admin Center]
 
-Was das kostet, hängt davon ab, wie viel Platz wir vorher frei machen:
+Die zwei übrigen Erweiterungen wollen wir direkt vor den Go-Live legen, von Mitte März bis Mitte Juni 2027, denn dann ist der Bedarf am größten. Würden wir sie früher nutzen, wäre es etwa 4.500 € teurer.
 
-Ohne weitere Maßnahmen: ca. 24.500 €
-Wir bereinigen das Projektsystem und das neue Migrationssystem so, wie wir es schon beim Testsystem INT gemacht haben (alte Protokolle und Historien löschen): ca. 8.800 €
-Zusätzlich kopieren wir das Migrationssystem ohne Buchungsdaten, wenn die Datenübernahme das zulässt: ca. 2.000 €
-Das ist der Betrag für die ganze Zeit bis zum Go-Live, keine dauerhaften Kosten.
+Von Mitte November bis Mitte März, also etwa vier Monate, haben wir keine kostenlose Erweiterung. In dieser Zeit müssen wir Speicherplatz kaufen (30 € pro GB und Monat) oder Platz frei machen. Was das kostet, hängt davon ab, wie viel Platz wir vorher frei machen:
 
-Nach dem Go-Live sieht es besser aus. Mit den neuen Lizenzen bekommen wir automatisch etwa 465 GB mehr Speicherplatz. Einen Monat nach dem Go-Live löschen wir außerdem das Projektsystem und das Migrationssystem. Nach heutiger Rechnung reicht der Platz dann bis etwa Herbst 2028. Bekommen die Techniker die günstigere Team-Member-Lizenz, bringt das weniger Platz; dann reicht er bis etwa Mitte 2028. Bis dahin erwarten wir keine weiteren Kosten für Speicherplatz.
+Ohne weitere Maßnahmen: ca. 22.000 bis 26.000 €
+Strategie 1: Wir bereinigen das Projektsystem und das Migrationssystem so, wie wir es schon beim Testsystem INT gemacht haben. Das heißt, wir löschen alte Batch-Protokolle und die Batch-Historie. Kosten dann: ca. 5.500 bis 9.500 €
+Strategie 2: Wie Strategie 1, und zusätzlich kopieren wir das Migrationssystem ohne Buchungsdaten, so wie das Testsystem TST. Das geht nur, wenn die Datenübernahme ohne diese Daten funktioniert. Kosten dann: ca. 500 bis 2.500 €
+Das ist der Betrag für die ganze Zeit bis zum Go-Live, keine dauerhaften Kosten. Wichtig ist: Die Bereinigung muss fertig sein, bevor die laufende Erweiterung Mitte November endet.
+
+[Bild 2: Größe der Systeme und die zwei Strategien zur Bereinigung]
+
+Strategie 3: Archivierung (Long-Term Data Retention)
+
+Es gibt noch einen dritten Weg. Alte, abgeschlossene Daten, zum Beispiel Buchungen aus früheren Jahren, können wir aus der Datenbank des Produktivsystems in einen günstigeren Langzeitspeicher von Microsoft verschieben. Die Daten gehen nicht verloren und können weiter angesehen werden. Sie brauchen aber keinen Platz mehr in der Datenbank.
+
+Der Vorteil: Unsere Testsysteme sind Kopien des Produktivsystems. Deshalb werden sie bei der nächsten Kopie auch kleiner.
+
+Die Einrichtung braucht aber Zeit und muss mit den Fachbereichen und den Aufbewahrungsfristen abgestimmt werden. Das hilft uns deshalb eher langfristig, nicht schon in den nächsten Monaten. Wie viel Platz wir damit sparen und was der Langzeitspeicher kostet, prüfen wir noch.
+
+Nach dem Go-Live
+
+Nach dem Go-Live sieht es besser aus. Mit den neuen Lizenzen bekommen wir automatisch etwa 465 GB mehr Speicherplatz. Einen Monat nach dem Go-Live löschen wir außerdem das Projektsystem und das Migrationssystem. Danach ist der Stand gleich, egal welche Strategie wir vorher gewählt haben.
+
+Nach heutiger Rechnung reicht der Platz dann bis etwa Herbst 2028. Bekommen die Techniker die günstigere Team-Member-Lizenz, bringt das weniger Platz; dann reicht er bis etwa Mitte 2028. Bis dahin erwarten wir keine weiteren Kosten für Speicherplatz.
 
 3. Kurz zusammengefasst
 
 Lizenzen: ca. 20.300 € im Monat ab Juni 2027 (ca. 15.800 €, wenn die Techniker nur Daten ansehen)
-Speicherplatz bis zum Go-Live: zwischen ca. 2.000 € und 24.500 €, je nach Maßnahmen
-Mein Vorschlag: Wir bereinigen das Projektsystem und das Migrationssystem bis Mitte November. Das spart den größten Teil der Kosten für den Speicherplatz.
+Speicherplatz bis zum Go-Live: einmalig zwischen ca. 500 € und 26.000 €, je nach Strategie
+Mein Vorschlag: Wir setzen Strategie 1 bis Mitte November um und prüfen parallel, ob Strategie 2 für die Datenübernahme möglich ist. Die Archivierung (Strategie 3) planen wir für später.
 Zwei Punkte sind noch offen. Die Preise kommen aus unserer ersten Planung und müssen noch mit dem Angebot abgeglichen werden. Außerdem haben vielleicht einige der 185 Benutzer schon heute eine Lizenz, weil sie bereits für eine andere Gesellschaft arbeiten. Für diese Benutzer kommen keine neuen Lizenzkosten dazu.
 
 Ich hoffe, das hilft dir für die Budgetplanung. Wenn etwas unklar ist, sag gerne Bescheid.
