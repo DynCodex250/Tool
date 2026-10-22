@@ -1,10 +1,10 @@
 # =============================================================================
 # check_duty_against_role()
 #
-# Which objects of a duty does another role already grant, and which privileges
-# of the duty could be added to that role without needing more than one
-# license? Built for the question: does the SCM version of a role still hold the
-# objects of a Commerce duty that SCM covers as well?
+# Which objects of one or more duties or privileges does another role already
+# grant, and which of the privileges could be added to that role without
+# needing more than one license? Built for the question: does the SCM version of
+# a role still hold the objects of a Commerce duty that SCM covers as well?
 #
 # Reads both roles from the license graph of D365, the table
 # LicensingSecurityObjectExplodedGraph. Needs the code files of the playbook
@@ -13,10 +13,11 @@
 # Objects are compared by name, as in the role license report, with their
 # access level: a role that only reads an object the duty writes has a gap.
 #
-# Several duties are checked together: each object counts once, and the column
-# DUTIES names the duties it comes from.
+# Give duties, privileges or both. Everything given is checked together: each
+# object counts once, and the column DUTIES names the duties it comes from;
+# "(no duty)" stands for a privilege assigned to a role directly.
 #
-# Example:
+# Examples:
 #
 #   source("check_duty_against_role.R")
 #
@@ -29,24 +30,30 @@
 #     export_path = file.path(export_folder, "Duty_check.xlsx")
 #   )
 #
-#   result$Summary       objects of the duty by group and state
+#   result <- check_duty_against_role(
+#     con         = cnn,
+#     source_role = "_WIBU_VERKAUF_INNENDIENST_MITARBEITER",
+#     privilege   = c("GUPPriceSimulatorProcess", "GUPPriceReportMaintain"),
+#     target_role = "5CDA51EB-9559-4B27-88C4-14601045B1F0"
+#   )
+#
+#   result$Summary       objects of what was checked, by group and state
 #   result$Gaps          objects the license covers that the role lacks
-#   result$Privileges    privileges of the duty; CAN_BE_ADDED = TRUE closes gaps
+#   result$Privileges    the privileges checked; CAN_BE_ADDED = TRUE closes gaps
 #   result$NotClosable   gaps no privilege covered by the license can close
 # =============================================================================
 
 check_duty_against_role <- function(
   con,
   source_role,
-  duty,
+  duty        = NULL,
+  privilege   = NULL,
   target_role,
   license     = "Supply Chain Management",
   export_path = NULL
 ) {
 
-  if (!is.character(duty) || length(duty) == 0L || anyNA(duty) || !all(nzchar(duty))) {
-    stop("duty must name one or more duties, for example c(\"RetailDiscountOfferMaintain\", \"RetailDiscountOfferView\").")
-  }
+  .check_names_to_check(duty, privilege)
 
   skus <- .load_license_skus(con)
   if (!license %in% skus$SKUNAME) {
@@ -54,11 +61,8 @@ check_duty_against_role <- function(
   }
 
   source_graph <- .load_role_license_graph(con, source_role)
-  unknown      <- duty[!.identifier_key(duty) %in% .identifier_key(source_graph$DUTYIDENTIFIER)]
-  if (length(unknown) > 0L) {
-    stop("The license graph holds no objects of ", paste0("'", unknown, "'", collapse = ", "), " in role '", source_role, "'.")
-  }
-  duty_rows <- .duty_rows_with_coverage(source_graph, duty, skus, license)
+  .check_names_in_graph(source_graph, duty, privilege, source_role)
+  duty_rows <- .duty_rows_with_coverage(source_graph, duty, privilege, skus, license)
 
   target <- .load_role_license_graph(con, target_role)
   if (nrow(target) == 0L) {
@@ -77,7 +81,7 @@ check_duty_against_role <- function(
   )
 
   message(
-    paste(duty, collapse = ", "), ": ", nrow(objects), " objects, ", nrow(gaps), " gaps in role ", target_role,
+    paste(c(duty, privilege), collapse = ", "), ": ", nrow(objects), " objects, ", nrow(gaps), " gaps in role ", target_role,
     ". ", sum(privileges$CAN_BE_ADDED), " privileges covered by ", license, " can be added; they close ",
     sum(!is.na(gaps$CLOSED_BY)), " of the ", nrow(gaps), " gaps."
   )
@@ -89,10 +93,48 @@ check_duty_against_role <- function(
   result
 }
 
-# The rows of the duty with the licenses that cover each of them.
-.duty_rows_with_coverage <- function(graph, duty, skus, license) {
+# duty and privilege: each NULL or names; at least one of them given.
+.check_names_to_check <- function(duty, privilege) {
 
-  rows <- graph[.identifier_key(graph$DUTYIDENTIFIER) %in% .identifier_key(duty), ]
+  is_names <- function(x) is.null(x) || (is.character(x) && length(x) > 0L && !anyNA(x) && all(nzchar(x)))
+
+  if (!is_names(duty) || !is_names(privilege) || (is.null(duty) && is.null(privilege))) {
+    stop(
+      "Name one or more duties or privileges, for example ",
+      "duty = c(\"RetailDiscountOfferMaintain\", \"RetailDiscountOfferView\") or ",
+      "privilege = c(\"GUPPriceSimulatorProcess\", \"GUPPriceReportMaintain\")."
+    )
+  }
+
+  invisible(TRUE)
+}
+
+# A misspelt name would otherwise drop out of the check without a word.
+.check_names_in_graph <- function(graph, duty, privilege, role) {
+
+  unknown <- c(
+    duty[!.identifier_key(duty) %in% .identifier_key(graph$DUTYIDENTIFIER)],
+    privilege[!.identifier_key(privilege) %in% .identifier_key(graph$PRIVILEGEIDENTIFIER)]
+  )
+
+  if (length(unknown) > 0L) {
+    stop("The license graph holds no objects of ", paste0("'", unknown, "'", collapse = ", "), " in role '", role, "'.")
+  }
+
+  invisible(TRUE)
+}
+
+# Where a privilege sits: its duty, or "(no duty)" when it is assigned to a role directly.
+.duty_label <- function(duty) {
+  dplyr::if_else(is.na(duty) | !nzchar(duty), "(no duty)", duty)
+}
+
+# The rows of the duties and privileges with the licenses that cover each row.
+.duty_rows_with_coverage <- function(graph, duty, privilege, skus, license) {
+
+  wanted <- .identifier_key(graph$DUTYIDENTIFIER) %in% .identifier_key(duty) |
+    .identifier_key(graph$PRIVILEGEIDENTIFIER) %in% .identifier_key(privilege)
+  rows <- graph[wanted, ]
   if (nrow(rows) == 0L) {
     return(rows)
   }
@@ -135,7 +177,7 @@ check_duty_against_role <- function(
       LICENSE    = paste(sort(unique(LICENSE)), collapse = " / "),
       COVERED    = all(LICENSE_COVERS),
       BELOW_BASE = all(ACTIVITY_COVERS),
-      DUTIES     = paste(sort(unique(DUTYIDENTIFIER)), collapse = ", "),
+      DUTIES     = paste(sort(unique(.duty_label(DUTYIDENTIFIER))), collapse = ", "),
       PRIVILEGES = paste(sort(unique(PRIVILEGEIDENTIFIER)), collapse = ", "),
       .groups    = "drop"
     ) |>
@@ -164,7 +206,7 @@ check_duty_against_role <- function(
     dplyr::group_by(PRIVILEGE = PRIVILEGEIDENTIFIER) |>
     dplyr::summarise(
       NAME        = dplyr::first(PRIVILEGENAME),
-      DUTIES      = paste(sort(unique(DUTYIDENTIFIER)), collapse = ", "),
+      DUTIES      = paste(sort(unique(.duty_label(DUTYIDENTIFIER))), collapse = ", "),
       OBJECTS     = dplyr::n_distinct(KEY),
       NOT_COVERED = dplyr::n_distinct(KEY[!LICENSE_COVERS]),
       GAPS        = dplyr::n_distinct(KEY[KEY %in% gaps]),
