@@ -13,6 +13,9 @@
 # Objects are compared by name, as in the role license report, with their
 # access level: a role that only reads an object the duty writes has a gap.
 #
+# Several duties are checked together: each object counts once, and the column
+# DUTIES names the duties it comes from.
+#
 # Example:
 #
 #   source("check_duty_against_role.R")
@@ -20,7 +23,7 @@
 #   result <- check_duty_against_role(
 #     con         = cnn,
 #     source_role = "_WIBU_VERKAUF_INNENDIENST_MITARBEITER",
-#     duty        = "RetailDiscountOfferMaintain",
+#     duty        = c("RetailDiscountOfferMaintain", "RetailDiscountOfferView"),
 #     target_role = "5CDA51EB-9559-4B27-88C4-14601045B1F0",
 #     license     = "Supply Chain Management",
 #     export_path = file.path(export_folder, "Duty_check.xlsx")
@@ -41,15 +44,21 @@ check_duty_against_role <- function(
   export_path = NULL
 ) {
 
+  if (!is.character(duty) || length(duty) == 0L || anyNA(duty) || !all(nzchar(duty))) {
+    stop("duty must name one or more duties, for example c(\"RetailDiscountOfferMaintain\", \"RetailDiscountOfferView\").")
+  }
+
   skus <- .load_license_skus(con)
   if (!license %in% skus$SKUNAME) {
     stop("Unknown license '", license, "'. LicensingAllSkus lists: ", paste(skus$SKUNAME, collapse = ", "))
   }
 
-  duty_rows <- .duty_rows_with_coverage(.load_role_license_graph(con, source_role), duty, skus, license)
-  if (nrow(duty_rows) == 0L) {
-    stop("The license graph holds no objects of duty '", duty, "' in role '", source_role, "'.")
+  source_graph <- .load_role_license_graph(con, source_role)
+  unknown      <- duty[!.identifier_key(duty) %in% .identifier_key(source_graph$DUTYIDENTIFIER)]
+  if (length(unknown) > 0L) {
+    stop("The license graph holds no objects of ", paste0("'", unknown, "'", collapse = ", "), " in role '", source_role, "'.")
   }
+  duty_rows <- .duty_rows_with_coverage(source_graph, duty, skus, license)
 
   target <- .load_role_license_graph(con, target_role)
   if (nrow(target) == 0L) {
@@ -68,7 +77,7 @@ check_duty_against_role <- function(
   )
 
   message(
-    "Duty ", duty, ": ", nrow(objects), " objects, ", nrow(gaps), " gaps in role ", target_role,
+    paste(duty, collapse = ", "), ": ", nrow(objects), " objects, ", nrow(gaps), " gaps in role ", target_role,
     ". ", sum(privileges$CAN_BE_ADDED), " privileges covered by ", license, " can be added; they close ",
     sum(!is.na(gaps$CLOSED_BY)), " of the ", nrow(gaps), " gaps."
   )
@@ -126,6 +135,7 @@ check_duty_against_role <- function(
       LICENSE    = paste(sort(unique(LICENSE)), collapse = " / "),
       COVERED    = all(LICENSE_COVERS),
       BELOW_BASE = all(ACTIVITY_COVERS),
+      DUTIES     = paste(sort(unique(DUTYIDENTIFIER)), collapse = ", "),
       PRIVILEGES = paste(sort(unique(PRIVILEGEIDENTIFIER)), collapse = ", "),
       .groups    = "drop"
     ) |>
@@ -154,6 +164,7 @@ check_duty_against_role <- function(
     dplyr::group_by(PRIVILEGE = PRIVILEGEIDENTIFIER) |>
     dplyr::summarise(
       NAME        = dplyr::first(PRIVILEGENAME),
+      DUTIES      = paste(sort(unique(DUTYIDENTIFIER)), collapse = ", "),
       OBJECTS     = dplyr::n_distinct(KEY),
       NOT_COVERED = dplyr::n_distinct(KEY[!LICENSE_COVERS]),
       GAPS        = dplyr::n_distinct(KEY[KEY %in% gaps]),
@@ -179,7 +190,7 @@ check_duty_against_role <- function(
   objects[.is_duty_gap(objects), ] |>
     dplyr::left_join(closing, by = "KEY") |>
     dplyr::arrange(GROUP, OBJECT) |>
-    dplyr::select(GROUP, STATE, OBJECT, ACCESS, TARGET_ACCESS, LICENSE, PRIVILEGES, CLOSED_BY)
+    dplyr::select(GROUP, STATE, OBJECT, ACCESS, TARGET_ACCESS, LICENSE, DUTIES, PRIVILEGES, CLOSED_BY)
 }
 
 .duty_check_summary <- function(objects) {
