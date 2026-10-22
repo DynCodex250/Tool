@@ -1,0 +1,321 @@
+---
+title: "Datenbank-Speicher für D365 bis zum Go-Live"
+subtitle: "Entscheidungsvorlage: Wann nutzen wir die kostenlosen Erweiterungen, wann kaufen wir Speicher?"
+author: "IT D365"
+date: "`r format(Sys.Date(), '%d.%m.%Y')`"
+output:
+  html_document:
+    theme: cosmo
+  word_document: default
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+# Zahlen und Daten im deutschen Format
+zahl  <- function(x, stellen = 0) formatC(x, format = "f", digits = stellen, big.mark = ".", decimal.mark = ",")
+datum <- function(d) format(d, "%d.%m.%Y")
+euro  <- function(x) paste(zahl(round(x, -2)), "€")
+
+# Alle Annahmen an einer Stelle; neue Werte hier eintragen und neu erzeugen
+ann <- list(
+  stichtag       = as.Date("2026-10-22"),  # DMG heute bereitgestellt
+  fenster1_ende  = as.Date("2026-11-12"),  # laufende kostenlose Erweiterung
+  go_live        = as.Date("2027-06-15"),
+  loeschung      = as.Date("2027-07-15"),  # DMG und (voraussichtlich) PRJ, einen Monat nach dem Go-Live
+  ende           = as.Date("2030-12-31"),
+  fenster_tage   = 45,
+  kontingent_gb  = 698,
+  erweiterung_gb = 698 * 2 / 3,            # Admin Center zeigt eher das Doppelte; reicht so oder so
+  lizenz_gb      = 465,
+  preis_gb       = 30,                     # € je GB und Monat
+  puffer         = 0.10,
+  prod_gb        = 212,
+  test_gb        = 177,                    # vereinbarter Planwert je Testumgebung (INT, TST, PRJ, DMG)
+  tst_heute_gb   = 70,                     # TST heute; nur für die Vergleichsrechnung
+  sonstige_gb    = 603 - (212 + 136 + 70 + 177),  # Admin Center 603 GB vor der DMG
+  wachstum_vor   = 3,                      # GB je Woche (Prod) bis zum Go-Live
+  wachstum_nach  = 4                       # GB je Woche (Prod) danach
+)
+# Stand heute laut Admin Center, dazu die neue DMG
+ist_heute <- c(Prod = 212, INT = 136, TST = 70, PRJ = 177, DMG = 177, Sonstiges = ann$sonstige_gb)
+
+tage         <- seq(ann$stichtag, ann$ende, by = "day")
+nach_go_live <- tage >= ann$go_live
+projekt_da   <- tage < ann$loeschung
+
+prod <- ann$prod_gb +
+  ann$wachstum_vor  * as.numeric(pmin(tage, ann$go_live) - ann$stichtag) / 7 +
+  ann$wachstum_nach * as.numeric(pmax(tage, ann$go_live) - ann$go_live) / 7
+kontingent <- ann$kontingent_gb + nach_go_live * ann$lizenz_gb
+
+ueberbrueckung_von <- ann$fenster1_ende + 1
+zu_decken          <- tage >= ueberbrueckung_von & !nach_go_live
+fenster_zeit       <- 2 * ann$fenster_tage
+zeitraum           <- function(von, anzahl) tage >= von & tage < von + anzahl
+
+plaene <- list(
+  A    = zeitraum(ueberbrueckung_von, fenster_zeit),
+  B    = zeitraum(ann$go_live - fenster_zeit, fenster_zeit),
+  ohne = rep(FALSE, length(tage))
+)
+
+# Belegung und Zukauf für eine Größe von TST; INT, PRJ und DMG haben den Planwert
+rechnung <- function(tst_gb) {
+  betrieb   <- prod + ann$test_gb + tst_gb + ann$sonstige_gb  # Prod, INT, TST, Sonstiges
+  projekt   <- projekt_da * 2 * ann$test_gb                    # PRJ und DMG
+  verbrauch <- betrieb + projekt
+
+  kauf_maske <- function(fenster) {
+    zu_decken & verbrauch > kontingent + fenster * ann$erweiterung_gb
+  }
+
+  # Kauf in 30-Tage-Blöcken: je Block die größte Fehlmenge plus Puffer, auf 10 GB aufgerundet;
+  # ein kürzerer letzter Block wird anteilig berechnet
+  kaufplan <- function(fenster) {
+    bedarf <- pmax(0, verbrauch - kontingent - fenster * ann$erweiterung_gb)
+    offen  <- kauf_maske(fenster)
+    if (!any(offen)) {
+      return(data.frame(von = as.Date(character()), bis = as.Date(character()),
+                        tage = numeric(), menge = numeric(), kosten = numeric()))
+    }
+    t_offen <- tage[offen]
+    lauf    <- cumsum(c(1, diff(as.numeric(t_offen)) > 1))
+    beginn  <- ave(as.numeric(t_offen), lauf, FUN = min)
+    block   <- interaction(lauf, (as.numeric(t_offen) - beginn) %/% 30, drop = TRUE, lex.order = TRUE)
+    zeilen  <- lapply(split(seq_along(t_offen), block), function(i) {
+      menge <- ceiling(max(bedarf[offen][i]) * (1 + ann$puffer) / 10) * 10
+      data.frame(von = min(t_offen[i]), bis = max(t_offen[i]), tage = length(i),
+                 menge = menge, kosten = menge * ann$preis_gb * min(length(i), 30) / 30)
+    })
+    ergebnis <- do.call(rbind, zeilen)
+    ergebnis[order(ergebnis$von), ]
+  }
+
+  kauf <- lapply(plaene, kaufplan)
+  list(betrieb = betrieb, projekt = projekt, verbrauch = verbrauch,
+       fehl = pmax(0, verbrauch - kontingent), kauf_maske = kauf_maske,
+       kauf = kauf, kosten = sapply(kauf, function(k) sum(k$kosten)))
+}
+plan_wert <- rechnung(ann$test_gb)       # Planwert: alle Testumgebungen 177 GB
+vergleich <- rechnung(ann$tst_heute_gb)  # Vergleich: TST bleibt bei 70 GB
+
+betrieb    <- plan_wert$betrieb
+projekt    <- plan_wert$projekt
+verbrauch  <- plan_wert$verbrauch
+fehl       <- plan_wert$fehl
+kauf_maske <- plan_wert$kauf_maske
+kauf       <- plan_wert$kauf
+kosten     <- plan_wert$kosten
+
+wert_am <- function(werte, d) werte[tage == d]
+fehl_ist_heute   <- sum(ist_heute) - ann$kontingent_gb
+ohne_projekt_max <- max(betrieb[!nach_go_live])
+fehl_heute  <- wert_am(fehl, ann$stichtag)
+fehl_spitze <- wert_am(fehl, ann$go_live - 1)
+tage_zu_decken <- sum(zu_decken)
+tage_kauf      <- sapply(plaene, function(f) sum(kauf_maske(f)))
+zeitraum_text  <- function(maske) paste(datum(min(tage[maske])), "bis", datum(max(tage[maske])))
+
+reserve_loeschung <- wert_am(kontingent - verbrauch, ann$loeschung)
+erschoepft <- function(k) {
+  b <- tage >= ann$loeschung & verbrauch > k
+  if (any(b)) format(min(tage[b]), "%m/%Y") else paste("nach", format(ann$ende, "%Y"))
+}
+kontingent_tm <- kontingent - nach_go_live * 115  # Techniker mit Team Member statt Activity
+fehl_go_live_bis_loeschung <- max(fehl[nach_go_live & projekt_da])
+```
+
+# Worum es geht
+
+Microsoft stellt uns für die Datenbanken von D365 einen festen Speicherplatz zur Verfügung: **`r zahl(ann$kontingent_gb)` GB**. Bisher reichte er.
+
+Für das Projekt der neuen Gesellschaft gibt es schon länger die Projektumgebung (PRJ). Heute, am `r datum(ann$stichtag)`, kommt die Umgebung für die Datenübernahme (DMG) mit rund **`r zahl(ann$test_gb)` GB** dazu. Damit liegen wir über dem Speicherplatz.
+
+**Das Problem ist zeitlich begrenzt.** PRJ und DMG brauchen wir nur für das Projekt. `r if (ohne_projekt_max <= ann$kontingent_gb) paste0("Ohne die beiden lägen wir bis zum Go-Live unter dem Kontingent, wenn auch knapp: kurz vor dem Go-Live wären es ", zahl(ohne_projekt_max), " von ", zahl(ann$kontingent_gb), " GB.") else paste0("Ohne die beiden lägen wir kurz vor dem Go-Live mit ", zahl(ohne_projekt_max), " GB nur leicht über dem Kontingent.")` Mit dem Go-Live bringen die neuen Lizenzen rund `r zahl(ann$lizenz_gb)` GB dazu, und einen Monat danach werden die DMG und voraussichtlich auch PRJ gelöscht. Bis dahin müssen wir die Zeit überbrücken: mit den kostenlosen Erweiterungen von Microsoft und mit gekauftem Speicher.
+
+### Kurz gesagt
+
+- Gerechnet ist mit dem vereinbarten Planwert von **`r zahl(ann$test_gb)` GB je Testumgebung** (INT, TST, PRJ, DMG). Damit fehlen ab heute rund **`r zahl(fehl_heute)` GB**, kurz vor dem Go-Live rund **`r zahl(fehl_spitze)` GB**. Tatsächlich fehlen heute erst rund `r zahl(fehl_ist_heute)` GB, weil INT und TST noch kleiner sind.
+- Microsoft erlaubt dreimal in 365 Tagen eine kostenlose Erweiterung für je `r ann$fenster_tage` Tage. Eine läuft bis zum `r datum(ann$fenster1_ende)`, **zwei sind noch frei**.
+- Vom `r datum(ueberbrueckung_von)` bis zum Go-Live sind `r tage_zu_decken` Tage zu überbrücken. Die zwei Erweiterungen decken `r fenster_zeit` Tage; für die übrigen rund `r tage_kauf[["A"]]` Tage kaufen wir Speicher (`r ann$preis_gb` € je GB und Monat, `r zahl(100 * ann$puffer)` % Puffer).
+- **Plan A** (Erweiterungen sofort, heutige Planung): rund **`r euro(kosten[["A"]])`**. **Plan B** (Erweiterungen direkt vor dem Go-Live): rund **`r euro(kosten[["B"]])`**. Bleibt TST bei heutigen `r zahl(ann$tst_heute_gb)` GB, sind es rund `r euro(vergleich$kosten[["A"]])` beziehungsweise `r euro(vergleich$kosten[["B"]])`.
+- **Zu entscheiden ist,** wann wir die zwei Erweiterungen einsetzen.
+
+# Ausgangslage
+
+```{r ausgangslage}
+stand <- function(d) {
+  i <- which(tage == d)
+  c(prod[i], ann$test_gb, ann$test_gb, projekt_da[i] * ann$test_gb, projekt_da[i] * ann$test_gb, ann$sonstige_gb)
+}
+spalte <- function(werte, grenze) {
+  summe <- sum(werte)
+  c(zahl(werte), paste0("**", zahl(summe), "**"), zahl(grenze), paste0("**", zahl(grenze - summe), "**"))
+}
+stichtage <- list(ann$stichtag, ann$go_live - 1, ann$loeschung)
+plan      <- lapply(stichtage, function(d) spalte(stand(d), wert_am(kontingent, d)))
+
+knitr::kable(data.frame(
+  Umgebung = c("Prod", "INT", "TST", "PRJ", "DMG", "Sonstiges", "**Summe**", "Kontingent", "**Fehlt (–) / frei (+)**"),
+  "Wofür" = c(
+    "Produktivsystem",
+    "Test jeder Änderung vor Prod",
+    "Reserve-Testsystem, falls INT belegt ist",
+    "Projektumgebung (besteht schon länger)",
+    paste0("Datenübernahme (neu seit ", datum(ann$stichtag), ")"),
+    "laut Admin Center",
+    "", "", ""
+  ),
+  "Ist heute" = spalte(ist_heute, ann$kontingent_gb),
+  "Planwert ab heute" = plan[[1]],
+  "Kurz vor dem Go-Live" = plan[[2]],
+  "Nach der Löschung" = plan[[3]],
+  check.names = FALSE
+), align = c("l", "l", "r", "r", "r", "r"),
+caption = paste0("Belegung in GB: heute laut Admin Center; mit dem Planwert von ", zahl(ann$test_gb), " GB je Testumgebung ab heute (", datum(ann$stichtag), "), am Tag vor dem Go-Live (", datum(ann$go_live - 1), ") und nach der Löschung von PRJ und DMG (", datum(ann$loeschung), ")"))
+```
+
+```{r diagramm, fig.width = 7, fig.height = 4.8, dpi = 150, fig.cap = "Belegung (Flächen) gegen das Kontingent (Linie); darunter, wann in Plan A und Plan B kostenlos erweitert und wann gekauft wird"}
+farben <- c(betrieb = "#2a78d6", projekt = "#eb6834")
+tinte  <- c(primaer = "#0b0b0b", sekundaer = "#52514e", raster = "#e1e0d9", achse = "#c3c2b7")
+grau   <- c(erweiterung = "#c3c2b7", kauf = "#52514e")
+
+sicht <- tage <= as.Date("2027-12-31")
+x <- tage[sicht]; b <- betrieb[sicht]; p <- projekt[sicht]; k <- kontingent[sicht]
+y_max    <- ceiling(max(b + p, k) / 200) * 200 + 200  # Platz für die Legende
+y_marken <- seq(0, y_max, by = 200)
+streifen_y <- c(A = -90, B = -170)
+
+par(mar = c(3, 5, 1.5, 1), las = 1)
+plot(x, b + p, type = "n", ylim = c(-210, y_max), axes = FALSE, xlab = "", ylab = "")
+abline(h = y_marken, col = tinte["raster"])
+polygon(c(x, rev(x)), c(rep(0, length(x)), rev(b)), col = farben["betrieb"], border = NA)
+polygon(c(x, rev(x)), c(b, rev(b + p)), col = farben["projekt"], border = NA)
+lines(x, b, col = "white", lwd = 2)
+lines(x, k, type = "s", lwd = 2, col = tinte["primaer"])
+abline(v = as.numeric(ann$go_live), col = tinte["achse"], lty = 3)
+mtext("Go-Live", side = 3, at = as.numeric(ann$go_live), line = 0.2, cex = 0.7, col = tinte["sekundaer"])
+
+mitte <- as.Date("2027-01-15")
+text(mitte, wert_am(betrieb, mitte) / 2, "Betrieb: Prod, INT, TST", col = "white", font = 2, cex = 0.75)
+text(mitte, wert_am(betrieb, mitte) + 0.8 * 2 * ann$test_gb, "Projekt: PRJ und DMG", col = "white", font = 2, cex = 0.75)
+
+axis(2, at = y_marken, labels = zahl(y_marken), col = tinte["achse"], col.axis = tinte["sekundaer"], cex.axis = 0.8)
+axis(2, at = streifen_y, labels = c("Plan A", "Plan B"), tick = FALSE, col.axis = tinte["primaer"], cex.axis = 0.8)
+mtext("GB", side = 2, at = y_max / 2, line = 3.5, las = 0, cex = 0.8, col = tinte["sekundaer"])
+axis.Date(1, at = seq(as.Date("2026-11-01"), as.Date("2027-12-01"), by = "2 months"), format = "%m/%y",
+          col = tinte["achse"], col.axis = tinte["sekundaer"], cex.axis = 0.8)
+
+streifen <- function(maske, y, farbe) {
+  r <- rle(maske[sicht])
+  bis <- cumsum(r$lengths)
+  von <- bis - r$lengths + 1
+  for (i in which(r$values)) rect(x[von[i]], y - 25, x[bis[i]] + 1, y + 25, col = farbe, border = NA)
+}
+laufend <- tage <= ann$fenster1_ende
+for (plan in c("A", "B")) {
+  streifen(laufend | plaene[[plan]], streifen_y[[plan]], grau["erweiterung"])
+  streifen(kauf_maske(plaene[[plan]]), streifen_y[[plan]], grau["kauf"])
+}
+
+legend("topleft",
+  legend = c("Betrieb (Prod, INT, TST)", "Projekt (PRJ, DMG)", "Kontingent", "kostenlose Erweiterung", "Zukauf"),
+  col = c(farben, tinte["primaer"], grau),
+  lty = c(NA, NA, 1, NA, NA), lwd = c(NA, NA, 2, NA, NA), pch = c(15, 15, NA, 15, 15), pt.cex = 1.6,
+  bty = "n", cex = 0.75, text.col = tinte["primaer"])
+```
+
+# Zwei Pläne
+
+**Plan A – Erweiterungen sofort (heutige Planung).** Die zwei freien Erweiterungen schließen direkt an die laufende an. Speicher kaufen wir erst ab Februar, dann aber in den Monaten, in denen am meisten fehlt. Vorteil: Wir gewinnen Zeit, um Preise und Rabatte zu klären, und nutzen die Erweiterungen, solange sie sicher verfügbar sind.
+
+**Plan B – Erweiterungen direkt vor dem Go-Live.** Wir kaufen ab Mitte November, solange die Lücke noch klein ist, und heben die Erweiterungen für die Zeit vor dem Go-Live auf, in der am meisten fehlt. Vorteil: geringere Kosten. Nachteil: Der Kauf beginnt sofort, und wir verlassen uns darauf, dass Microsoft die Erweiterungen im Frühjahr noch so anbietet.
+
+```{r plaene}
+zeile <- function(name, fenster) {
+  kp <- kauf[[name]]
+  c(
+    Erweiterungen = if (any(fenster)) zeitraum_text(fenster) else "keine",
+    Zukauf        = if (nrow(kp)) zeitraum_text(kauf_maske(fenster)) else "keiner",
+    "Tage mit Zukauf" = zahl(tage_kauf[[name]]),
+    "Größte Menge (GB)" = if (nrow(kp)) zahl(max(kp$menge)) else "0",
+    Kosten        = euro(kosten[[name]])
+  )
+}
+tabelle <- rbind(
+  "Plan A: Erweiterungen sofort"            = zeile("A", plaene$A),
+  "Plan B: Erweiterungen vor dem Go-Live"   = zeile("B", plaene$B),
+  "Zum Vergleich: ohne die zwei Erweiterungen" = zeile("ohne", plaene$ohne)
+)
+knitr::kable(data.frame(Plan = rownames(tabelle), tabelle, check.names = FALSE, row.names = NULL),
+  align = c("l", "l", "l", "r", "r", "r"),
+  caption = paste0("Kosten bis zum Go-Live, mit ", zahl(100 * ann$puffer), " % Puffer"))
+```
+
+```{r vergleich_tst}
+auswahl <- c("A", "B", "ohne")
+knitr::kable(data.frame(
+  Plan = c("Plan A: Erweiterungen sofort", "Plan B: Erweiterungen vor dem Go-Live", "Ohne die zwei Erweiterungen"),
+  "Planwert: alle Testumgebungen 177 GB" = euro(plan_wert$kosten[auswahl]),
+  "Heutiger Stand: TST bleibt bei 70 GB" = euro(vergleich$kosten[auswahl]),
+  check.names = FALSE
+), align = c("l", "r", "r"),
+caption = paste0("Kosten mit ", zahl(100 * ann$puffer), " % Puffer: Planwert gegen heutigen Stand von TST"))
+```
+
+Plan B ist rund **`r euro(kosten[["A"]] - kosten[["B"]])`** günstiger als Plan A. Der Grund: Die Lücke wächst jede Woche, weil Prod wächst. Wer die Erweiterungen früh einsetzt, kauft später, also dann, wenn am meisten fehlt. Die zwei kostenlosen Erweiterungen sparen je nach Plan zwischen `r euro(kosten[["ohne"]] - kosten[["A"]])` und `r euro(kosten[["ohne"]] - kosten[["B"]])`.
+
+```{r kauf_je_monat}
+monate <- do.call(rbind, lapply(c("A", "B"), function(plan) {
+  kp <- kauf[[plan]]
+  data.frame(
+    Plan = paste("Plan", plan),
+    Zeitraum = paste(datum(kp$von), "bis", datum(kp$bis)),
+    "Menge (GB)" = zahl(kp$menge),
+    Kosten = euro(kp$kosten),
+    check.names = FALSE
+  )
+}))
+knitr::kable(monate, align = c("l", "l", "r", "r"),
+  caption = paste0("Zukauf je Monat: größte Fehlmenge im Zeitraum plus ", zahl(100 * ann$puffer), " % Puffer, auf 10 GB aufgerundet; ein kürzerer letzter Zeitraum anteilig"))
+```
+
+# Risiken
+
+```{r risiken}
+monatskosten <- function(gb) ceiling(gb * (1 + ann$puffer) / 10) * 10 * ann$preis_gb
+knitr::kable(data.frame(
+  Risiko = c(
+    "Der Go-Live verschiebt sich",
+    "Eine Testumgebung wird größer als 177 GB, z. B. die DMG ab der zweiten Datenübernahme mit rund 200 GB",
+    "Wir sind über dem Kontingent, ohne Erweiterung oder Zukauf"
+  ),
+  Wirkung = c(
+    "Keine Erweiterung ist mehr frei, und die neuen Lizenzen kommen erst mit dem Go-Live. Alternative: die Lizenzen zum geplanten Termin aktivieren; sie bringen 465 GB, kosten aber selbst rund 20.300 € im Monat.",
+    "Rund 23 GB mehr je betroffener Umgebung in jedem Monat mit Zukauf.",
+    "Microsoft kann Vorgänge wie das Kopieren von Umgebungen sperren (genauer Umfang bei Microsoft zu bestätigen). Den Zukauf daher rechtzeitig vor dem Ende jeder Erweiterung auslösen."
+  ),
+  "Mehrkosten" = c(
+    paste("rund", euro(monatskosten(fehl_spitze)), "je Monat"),
+    paste("rund", euro(monatskosten(23)), "je Monat und Umgebung"),
+    "–"
+  ),
+  check.names = FALSE
+), align = c("l", "l", "r"), caption = "Risiken und was sie kosten")
+```
+
+# Nach dem Go-Live
+
+Mit den neuen Lizenzen steigt das Kontingent auf `r zahl(ann$kontingent_gb + ann$lizenz_gb)` GB. `r if (fehl_go_live_bis_loeschung > 0) paste0("Bis zur Löschung von PRJ und DMG fehlen noch einmal bis zu ", zahl(fehl_go_live_bis_loeschung), " GB.") else "Das reicht auch für den Monat bis zur Löschung von PRJ und DMG."` Nach der Löschung bleiben rund **`r zahl(reserve_loeschung)` GB frei**. Bei rund `r zahl(ann$wachstum_nach)` GB Wachstum je Woche in Prod reicht das nach heutiger Rechnung bis etwa **`r erschoepft(kontingent)`**; bekommen die Servicetechniker die günstigere Team-Member-Lizenz, bis etwa `r erschoepft(kontingent_tm)`. Bis dahin erwarten wir keine weiteren Kosten für Speicher.
+
+# Annahmen
+
+- Kontingent `r zahl(ann$kontingent_gb)` GB laut Admin Center; heutige Belegung 603 GB plus die neue DMG mit `r zahl(ann$test_gb)` GB, zusammen `r zahl(sum(ist_heute))` GB.
+- Gerechnet wird mit dem vereinbarten Planwert von `r zahl(ann$test_gb)` GB je Testumgebung (INT, TST, PRJ, DMG). Heute sind INT `r zahl(ist_heute[["INT"]])` GB und TST `r zahl(ist_heute[["TST"]])` GB groß. Die Testumgebungen wachsen in der Rechnung nicht, nur Prod wächst. Zum Vergleich ist auch gerechnet, dass TST bei `r zahl(ann$tst_heute_gb)` GB bleibt.
+- PRJ besteht schon länger, die DMG ist seit dem `r datum(ann$stichtag)` neu. Beide werden am `r datum(ann$loeschung)` gelöscht, PRJ voraussichtlich.
+- Prod wächst bis zum Go-Live um `r zahl(ann$wachstum_vor)` GB je Woche, danach um `r zahl(ann$wachstum_nach)` GB.
+- Go-Live am `r datum(ann$go_live)`; ab dann bringen die neuen Lizenzen `r zahl(ann$lizenz_gb)` GB.
+- Kostenlose Erweiterung: `r ann$fenster_tage` Tage, dreimal in 365 Tagen; die laufende endet am `r datum(ann$fenster1_ende)`. Die Höhe reicht in beiden Plänen für die Spitze.
+- Zukauf zu `r ann$preis_gb` € je GB und Monat, Monat für Monat entschieden, mit `r zahl(100 * ann$puffer)` % Puffer. Rabatte sind nicht berücksichtigt.
