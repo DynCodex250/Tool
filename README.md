@@ -2,7 +2,7 @@ source(file.path(repo_path, "check_duty_against_role.R"))
 
 result <- check_duty_against_role(
   con         = cnn,
-  source_role = "_WIBU_VERKAUF_INNENDIENST_MITARBEITER",   # Rolle mit der Aufgabe
+  source_role = "SalesClerck",   # Rolle mit der Aufgabe
   duty        = "RetailDiscountOfferMaintain",              # die Aufgabe
   target_role = "5CDA51EB-9559-4B27-88C4-14601045B1F0",     # Ihre SCM-Rolle
   license     = "Supply Chain Management",                  # Lizenz, bei der es bleiben soll
